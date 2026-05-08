@@ -179,15 +179,24 @@ class CameraSystem:
                 elif self.net: # OpenCV DNN Fallback for TFLite
                     blob = cv2.dnn.blobFromImage(frame, size=(320, 320), swapRB=True, crop=False)
                     self.net.setInput(blob)
-                    # EfficientDet TFLite via OpenCV usually returns [1, 1, N, 7]
+                    # EfficientDet TFLite via OpenCV can return [1, 1, N, 7] or [1, N, 7]
                     output = self.net.forward()
-                    for i in range(output.shape[2]):
-                        confidence = output[0, 0, i, 2]
+                    
+                    # Normalize to [N, 7]
+                    if output.ndim == 4:
+                        detections = output[0, 0]
+                    elif output.ndim == 3:
+                        detections = output[0]
+                    else:
+                        detections = output
+
+                    for i in range(detections.shape[0]):
+                        confidence = detections[i, 2]
                         if confidence > 0.5:
-                            class_id = int(output[0, 0, i, 1])
+                            class_id = int(detections[i, 1])
                             label = self.CLASSES[class_id] if class_id < len(self.CLASSES) else f"unknown_{class_id}"
                             if label in self.IMPORTANT_CLASSES and confidence > best_detection["confidence"]:
-                                box = output[0, 0, i, 3:7] * np.array([w, h, w, h])
+                                box = detections[i, 3:7] * np.array([w, h, w, h])
                                 best_detection = {
                                     "object": label, "confidence": float(confidence),
                                     "box": box.astype("int"), "frame_width": w
