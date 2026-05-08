@@ -17,15 +17,19 @@ def install_dependencies():
     except:
         pass
 
+    pip_cmd = [sys.executable, "-m", "pip", "install"]
     if is_pi:
-        print("[*] Raspberry Pi detected. Adding RPi.GPIO...")
+        print("[*] Raspberry Pi detected. Adding RPi.GPIO and using --break-system-packages...")
         packages.extend(["RPi.GPIO"])
-        print("[!] IMPORTANT: Picamera2 must be installed via system package manager:")
-        print("[!] sudo apt update && sudo apt install python3-picamera2")
+        # Bypass PEP 668 restriction on newer Pi OS
+        pip_cmd.append("--break-system-packages")
     
     for package in packages:
         print(f"[*] Installing {package}...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+        try:
+            subprocess.check_call(pip_cmd + [package])
+        except subprocess.CalledProcessError:
+            print(f"[!] Warning: Failed to install {package}. You may need to install it manually.")
 
 def download_models():
     print("[*] Downloading EfficientDet-Lite0 TFLite models...")
@@ -42,16 +46,24 @@ def download_models():
         path = os.path.join(model_dir, filename)
         if not os.path.exists(path):
             print(f"[*] Downloading {filename}...")
-            response = requests.get(url, stream=True)
-            with open(path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            print(f"[+] Downloaded {filename}")
+            try:
+                response = requests.get(url, stream=True)
+                with open(path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                print(f"[+] Downloaded {filename}")
+            except Exception as e:
+                print(f"[!] Failed to download {filename}: {e}")
         else:
             print(f"[*] {filename} already exists.")
 
 if __name__ == "__main__":
-    install_dependencies()
+    try:
+        install_dependencies()
+    except Exception as e:
+        print(f"[!] Dependency install error: {e}")
+    
+    # Always try to download models
     download_models()
     print("[+] Setup complete!")
