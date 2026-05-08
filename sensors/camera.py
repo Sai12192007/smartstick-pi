@@ -14,13 +14,22 @@ except ImportError:
 try:
     import tflite_runtime.interpreter as tflite
     TFLITE_AVAILABLE = True
+    USING_MEDIAPIPE = False
 except ImportError:
     try:
         import ai_edge_litert.interpreter as tflite
         TFLITE_AVAILABLE = True
+        USING_MEDIAPIPE = False
     except ImportError:
-        TFLITE_AVAILABLE = False
-        print("[Camera] WARNING: TensorFlow Lite runtime not found.")
+        try:
+            import mediapipe.tasks.python.vision as mp_vision
+            TFLITE_AVAILABLE = True
+            USING_MEDIAPIPE = True
+            print("[Camera] Using MediaPipe Tasks API for inference.")
+        except ImportError:
+            TFLITE_AVAILABLE = False
+            USING_MEDIAPIPE = False
+            print("[Camera] WARNING: TensorFlow Lite or MediaPipe runtime not found.")
 
 class CameraSystem:
     def __init__(self, model_path="models/efficientdet_lite0.tflite", label_path="models/labels.txt"):
@@ -40,6 +49,7 @@ class CameraSystem:
         self.IMPORTANT_CLASSES = ["person", "car", "chair", "bottle", "bus", "dog", "cat", "bicycle", "motorcycle"]
         
         self.interpreter = None
+        self.detector = None # For MediaPipe
         self.picam2 = None
         self.latest_frame = None
         self.current_detection = {"object": "none", "confidence": 0, "box": None}
@@ -49,16 +59,27 @@ class CameraSystem:
         self.running = False
         self.thread = None
 
-        # Initialize TFLite Interpreter
+        # Initialize Inference Engine
         if TFLITE_AVAILABLE and os.path.exists(self.model_path):
             try:
-                self.interpreter = tflite.Interpreter(model_path=self.model_path)
-                self.interpreter.allocate_tensors()
-                self.input_details = self.interpreter.get_input_details()
-                self.output_details = self.interpreter.get_output_details()
-                print(f"[Camera] TFLite EfficientDet loaded successfully. Input: {self.input_details[0]['shape']}")
+                if USING_MEDIAPIPE:
+                    # MediaPipe Tasks API Initialization
+                    base_options = mp_vision.BaseOptions(model_asset_path=self.model_path)
+                    options = mp_vision.ObjectDetectorOptions(
+                        base_options=base_options,
+                        running_mode=mp_vision.RunningMode.IMAGE,
+                        score_threshold=0.5)
+                    self.detector = mp_vision.ObjectDetector.create_from_options(options)
+                    print("[Camera] MediaPipe ObjectDetector loaded successfully.")
+                else:
+                    # Standard TFLite Interpreter Initialization
+                    self.interpreter = tflite.Interpreter(model_path=self.model_path)
+                    self.interpreter.allocate_tensors()
+                    self.input_details = self.interpreter.get_input_details()
+                    self.output_details = self.interpreter.get_output_details()
+                    print(f"[Camera] TFLite EfficientDet loaded successfully. Input: {self.input_details[0]['shape']}")
             except Exception as e:
-                print(f"[Camera] ERROR: Failed to load TFLite model: {e}")
+                print(f"[Camera] ERROR: Failed to load inference engine: {e}")
         else:
             print("[Camera] ERROR: TFLite model or runtime missing.")
 
@@ -89,7 +110,7 @@ class CameraSystem:
             print(f"[Camera] ERROR: Failed to start camera: {e}")
 
     def _update(self):
-        """Threaded loop for TFLite inference."""
+        """Threaded loop for inference."""
         while self.running:
             try:
                 frame = self.picam2.capture_array()
@@ -102,52 +123,67 @@ class CameraSystem:
                 
                 self.latest_frame = frame
                 
-                if self.interpreter is None:
+                if self.interpreter is None and self.detector is None:
                     time.sleep(1)
                     continue
-
-                # Pre-processing for EfficientDet-Lite0 (320x320)
-                input_shape = self.input_details[0]['shape']
-                input_data = cv2.resize(frame, (input_shape[2], input_shape[1]))
-                input_data = np.expand_dims(input_data, axis=0)
-
-                # Set tensor
-                self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
-                
-                # Run Inference
-                self.interpreter.invoke()
-
-                # Get results (Standard TFLite Object Detection Output)
-                # [1, 10, 4] Boxes, [1, 10] Classes, [1, 10] Scores, [1] count
-                boxes = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
-                classes = self.interpreter.get_tensor(self.output_details[1]['index'])[0]
-                scores = self.interpreter.get_tensor(self.output_details[2]['index'])[0]
-                count = int(self.interpreter.get_tensor(self.output_details[3]['index'])[0])
 
                 (h, w) = frame.shape[:2]
                 best_detection = {"object": "none", "confidence": 0, "box": None, "frame_width": w}
 
-                for i in range(count):
-                    confidence = scores[i]
-                    if confidence > 0.5: # EfficientDet is more accurate, can use 0.5
-                        class_id = int(classes[i])
-                        if class_id < len(self.CLASSES):
-                            label = self.CLASSES[class_id]
-                        else:
-                            label = f"unknown_{class_id}"
-                        
-                        if label in self.IMPORTANT_CLASSES:
-                            if confidence > best_detection["confidence"]:
-                                # Box format: [ymin, xmin, ymax, xmax] (normalized)
-                                ymin, xmin, ymax, xmax = boxes[i]
-                                (startX, startY, endX, endY) = (int(xmin * w), int(ymin * h), int(xmax * w), int(ymax * h))
-                                
-                                best_detection = {
-                                    "object": label,
-                                    "confidence": float(confidence),
-                                    "box": (startX, startY, endX, endY),
-                                    "frame_width": w
-                                }
+                if USING_MEDIAPIPE:
+                    # MediaPipe Inference
+                    import mediapipe as mp
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                    result = self.detector.detect(mp_image)
+                    
+                    if result.detections:
+                        # Find best detection
+                        for detection in result.detections:
+                            category = detection.categories[0]
+                            label = category.category_name
+                            confidence = category.score
+                            
+                            if label in self.IMPORTANT_CLASSES and confidence > 0.5:
+                                if confidence > best_detection["confidence"]:
+                                    bbox = detection.bounding_box
+                                    (startX, startY, endX, endY) = (int(bbox.origin_x), int(bbox.origin_y), 
+                                                                    int(bbox.origin_x + bbox.width), int(bbox.origin_y + bbox.height))
+                                    best_detection = {
+                                        "object": label,
+                                        "confidence": float(confidence),
+                                        "box": (startX, startY, endX, endY),
+                                        "frame_width": w
+                                    }
+                else:
+                    # Standard TFLite Inference
+                    input_shape = self.input_details[0]['shape']
+                    input_data = cv2.resize(frame, (input_shape[2], input_shape[1]))
+                    input_data = np.expand_dims(input_data, axis=0)
+
+                    self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
+                    self.interpreter.invoke()
+
+                    boxes = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+                    classes = self.interpreter.get_tensor(self.output_details[1]['index'])[0]
+                    scores = self.interpreter.get_tensor(self.output_details[2]['index'])[0]
+                    count = int(self.interpreter.get_tensor(self.output_details[3]['index'])[0])
+
+                    for i in range(count):
+                        confidence = scores[i]
+                        if confidence > 0.5:
+                            class_id = int(classes[i])
+                            label = self.CLASSES[class_id] if class_id < len(self.CLASSES) else f"unknown_{class_id}"
+                            
+                            if label in self.IMPORTANT_CLASSES:
+                                if confidence > best_detection["confidence"]:
+                                    ymin, xmin, ymax, xmax = boxes[i]
+                                    (startX, startY, endX, endY) = (int(xmin * w), int(ymin * h), int(xmax * w), int(ymax * h))
+                                    best_detection = {
+                                        "object": label,
+                                        "confidence": float(confidence),
+                                        "box": (startX, startY, endX, endY),
+                                        "frame_width": w
+                                    }
                 
                 # Stability Filter
                 if best_detection["object"] == self.last_seen_object and best_detection["object"] != "none":
