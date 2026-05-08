@@ -14,8 +14,8 @@ def install_dependencies():
         print(f"[!] Warning: Could not install system dependencies via apt: {e}")
 
     print("[*] Installing Python dependencies...")
-    # Core dependencies for streaming and hardware control
-    packages = ["opencv-python-headless", "numpy", "imutils", "requests"]
+    # Core dependencies for MJPEG streaming and sensor serving
+    packages = ["opencv-python-headless", "numpy", "imutils", "requests", "Flask", "flask-cors"]
     
     # Check if we are on a Raspberry Pi
     is_pi = False
