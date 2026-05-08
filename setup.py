@@ -4,8 +4,20 @@ import subprocess
 import sys
 
 def install_dependencies():
-    print("[*] Installing dependencies...")
-    packages = ["opencv-python", "numpy", "imutils", "requests", "tflite-runtime"]
+    print("[*] Installing system dependencies (requires sudo)...")
+    try:
+        # Install libraries needed by OpenCV and TFLite
+        subprocess.check_call(["sudo", "apt-get", "update"])
+        subprocess.check_call(["sudo", "apt-get", "install", "-y", 
+                             "libopenblas-dev", "libatlas-base-dev", "liblapack-dev",
+                             "libjasper-dev", "libqtgui4", "libqt4-test"])
+    except Exception as e:
+        print(f"[!] Warning: Could not install system dependencies via apt: {e}")
+        print("[!] Please run: sudo apt install libopenblas-dev libatlas-base-dev")
+
+    print("[*] Installing Python dependencies...")
+    # Try ai-edge-litert first as it's the newer version of tflite-runtime
+    packages = ["opencv-python", "numpy", "imutils", "requests", "ai-edge-litert"]
     
     # Check if we are on a Raspberry Pi
     is_pi = False
@@ -21,7 +33,6 @@ def install_dependencies():
     if is_pi:
         print("[*] Raspberry Pi detected. Adding RPi.GPIO and using --break-system-packages...")
         packages.extend(["RPi.GPIO"])
-        # Bypass PEP 668 restriction on newer Pi OS
         pip_cmd.append("--break-system-packages")
     
     for package in packages:
@@ -29,7 +40,14 @@ def install_dependencies():
         try:
             subprocess.check_call(pip_cmd + [package])
         except subprocess.CalledProcessError:
-            print(f"[!] Warning: Failed to install {package}. You may need to install it manually.")
+            if package == "ai-edge-litert":
+                print("[*] ai-edge-litert failed, trying tflite-runtime...")
+                try:
+                    subprocess.check_call(pip_cmd + ["tflite-runtime"])
+                except:
+                    print("[!] Warning: Failed to install TFLite. You may need to install it manually.")
+            else:
+                print(f"[!] Warning: Failed to install {package}.")
 
 def download_models():
     print("[*] Downloading EfficientDet-Lite0 TFLite models...")

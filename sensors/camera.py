@@ -15,8 +15,12 @@ try:
     import tflite_runtime.interpreter as tflite
     TFLITE_AVAILABLE = True
 except ImportError:
-    TFLITE_AVAILABLE = False
-    print("[Camera] WARNING: tflite-runtime not found.")
+    try:
+        import ai_edge_litert.interpreter as tflite
+        TFLITE_AVAILABLE = True
+    except ImportError:
+        TFLITE_AVAILABLE = False
+        print("[Camera] WARNING: TensorFlow Lite runtime not found.")
 
 class CameraSystem:
     def __init__(self, model_path="models/efficientdet_lite0.tflite", label_path="models/labels.txt"):
