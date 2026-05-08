@@ -29,6 +29,9 @@ class CameraSystem:
         self.picam2 = None
         self.latest_frame = None
         self.current_detection = {"object": "none", "confidence": 0, "box": None}
+        self.last_seen_object = "none"
+        self.detection_counter = 0
+        self.STABILITY_THRESHOLD = 2 # Object must be seen in 2 consecutive frames
         self.running = False
         self.thread = None
 
@@ -107,7 +110,7 @@ class CameraSystem:
 
                 for i in range(0, detections.shape[2]):
                     confidence = detections[0, 0, i, 2]
-                    if confidence > 0.5: # Confidence threshold
+                    if confidence > 0.65: # Increased threshold for higher accuracy
                         idx = int(detections[0, 0, i, 1])
                         label = self.CLASSES[idx]
                         
@@ -122,7 +125,15 @@ class CameraSystem:
                                     "frame_width": w
                                 }
                 
-                self.current_detection = best_detection
+                # Stability filter: Only update current_detection if seen consistently
+                if best_detection["object"] == self.last_seen_object and best_detection["object"] != "none":
+                    self.detection_counter += 1
+                else:
+                    self.last_seen_object = best_detection["object"]
+                    self.detection_counter = 0
+
+                if self.detection_counter >= self.STABILITY_THRESHOLD or best_detection["object"] == "none":
+                    self.current_detection = best_detection
                 
             except Exception as e:
                 print(f"[Camera] Capture/ML Error: {e}")
