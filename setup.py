@@ -6,18 +6,16 @@ import sys
 def install_dependencies():
     print("[*] Installing system dependencies (requires sudo)...")
     try:
-        # Install libraries needed by OpenCV and TFLite
+        # Install libraries needed by OpenCV and Camera
         subprocess.check_call(["sudo", "apt-get", "update"])
         subprocess.check_call(["sudo", "apt-get", "install", "-y", 
-                             "libopenblas-dev", "libatlas-base-dev", "liblapack-dev",
-                             "libgomp1"])
+                             "libopenblas-dev", "libatlas-base-dev", "libgomp1"])
     except Exception as e:
         print(f"[!] Warning: Could not install system dependencies via apt: {e}")
-        print("[!] Please run: sudo apt install libopenblas0 libatlas3-base libgomp1")
 
     print("[*] Installing Python dependencies...")
-    # Using headless version of OpenCV to reduce system dependencies
-    packages = ["opencv-python-headless", "numpy", "imutils", "requests", "ai-edge-litert"]
+    # Core dependencies for streaming and hardware control
+    packages = ["opencv-python-headless", "numpy", "imutils", "requests"]
     
     # Check if we are on a Raspberry Pi
     is_pi = False
@@ -40,41 +38,11 @@ def install_dependencies():
         try:
             subprocess.check_call(pip_cmd + [package])
         except subprocess.CalledProcessError:
-            if package == "ai-edge-litert" or package == "tflite-runtime":
-                print("[*] TFLite/LiteRT pip install failed, trying system package...")
-                try:
-                    subprocess.check_call(["sudo", "apt-get", "install", "-y", "python3-tflite-runtime"])
-                except:
-                    print("[!] Warning: Failed to install TFLite. Please install it manually.")
-            else:
-                print(f"[!] Warning: Failed to install {package}.")
+            print(f"[!] Warning: Failed to install {package}.")
 
 def download_models():
-    print("[*] Downloading EfficientDet-Lite0 TFLite models...")
-    model_dir = "models"
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
-
-    files = {
-        "efficientdet_lite0.tflite": "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/latest/efficientdet_lite0.tflite",
-        "labels.txt": "https://raw.githubusercontent.com/amikelive/coco-labels/master/coco-labels-2014_2017.txt"
-    }
-
-    for filename, url in files.items():
-        path = os.path.join(model_dir, filename)
-        if not os.path.exists(path):
-            print(f"[*] Downloading {filename}...")
-            try:
-                response = requests.get(url, stream=True)
-                with open(path, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                print(f"[+] Downloaded {filename}")
-            except Exception as e:
-                print(f"[!] Failed to download {filename}: {e}")
-        else:
-            print(f"[*] {filename} already exists.")
+    # No longer needed as AI is on the Android App
+    pass
 
 if __name__ == "__main__":
     try:
@@ -82,6 +50,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[!] Dependency install error: {e}")
     
-    # Always try to download models
-    download_models()
     print("[+] Setup complete!")

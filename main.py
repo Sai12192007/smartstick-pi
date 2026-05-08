@@ -1,11 +1,12 @@
 import time
 import signal
 import sys
+import json
+import base64
 from sensors.camera import CameraSystem
 from sensors.ultrasonic import UltrasonicSensor
 from actuators.buzzer import Buzzer
 from server import SocketServer
-from utils.logic import get_direction, format_data
 
 class SmartStick:
     def __init__(self):
@@ -32,27 +33,34 @@ class SmartStick:
                 # 1. Get Distance
                 distance = self.ultrasonic.get_distance()
                 
-                # 2. Get Object Detection
-                detection = self.camera.get_latest_detection()
-                obj_name = detection["object"]
-                box = detection["box"]
-                frame_width = detection.get("frame_width", 300)
+                # 2. Get JPEG Frame
+                jpeg_frame = self.camera.get_jpeg_frame()
+                frame_b64 = ""
+                if jpeg_frame:
+                    frame_b64 = base64.b64encode(jpeg_frame).decode('utf-8')
                 
-                # 3. Determine Direction
-                direction = get_direction(box, frame_width)
-                
-                # 4. Apply Buzzer Logic
+                # 3. Apply Buzzer Logic (Local for low-latency safety)
                 self.buzzer.set_distance(distance)
                 
-                # 5. Format and Send Data
-                message = format_data(obj_name, distance, direction)
+                # 4. Construct Data Payload for Android App
+                payload = {
+                    "distance": int(distance),
+                    "frame": frame_b64,
+                    "timestamp": time.time()
+                }
+                
+                # 5. Send Data
+                message = json.dumps(payload) + "\n"
                 sent = self.server.send_data(message)
                 
-                # Log status
-                print(f"[Status] Obj: {obj_name:7} | Dist: {distance:5}cm | Dir: {direction:7} | Socket: {'OK' if sent else 'Wait'}")
+                # Log status (truncated for readability)
+                if sent:
+                    print(f"[Stream] Sending Frame + Dist: {int(distance)}cm", end="\r")
+                else:
+                    print("[Stream] Waiting for client connection...", end="\r")
                 
-                # Sleep to maintain frequency (1-2 seconds as requested)
-                time.sleep(1.0)
+                # Frequency control (10 FPS for stability on Zero 2 W)
+                time.sleep(0.1)
                 
         except KeyboardInterrupt:
             self.stop()
