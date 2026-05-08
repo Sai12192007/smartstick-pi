@@ -50,6 +50,7 @@ class CameraSystem:
         
         self.interpreter = None
         self.detector = None # For MediaPipe
+        self.net = None # For OpenCV DNN Fallback
         self.picam2 = None
         self.latest_frame = None
         self.current_detection = {"object": "none", "confidence": 0, "box": None}
@@ -60,28 +61,34 @@ class CameraSystem:
         self.thread = None
 
         # Initialize Inference Engine
-        if TFLITE_AVAILABLE and os.path.exists(self.model_path):
+        if os.path.exists(self.model_path):
             try:
-                if USING_MEDIAPIPE:
-                    # MediaPipe Tasks API Initialization
-                    base_options = mp_vision.BaseOptions(model_asset_path=self.model_path)
-                    options = mp_vision.ObjectDetectorOptions(
-                        base_options=base_options,
-                        running_mode=mp_vision.RunningMode.IMAGE,
-                        score_threshold=0.5)
-                    self.detector = mp_vision.ObjectDetector.create_from_options(options)
-                    print("[Camera] MediaPipe ObjectDetector loaded successfully.")
+                if TFLITE_AVAILABLE:
+                    if USING_MEDIAPIPE:
+                        base_options = mp_vision.BaseOptions(model_asset_path=self.model_path)
+                        options = mp_vision.ObjectDetectorOptions(
+                            base_options=base_options,
+                            running_mode=mp_vision.RunningMode.IMAGE,
+                            score_threshold=0.5)
+                        self.detector = mp_vision.ObjectDetector.create_from_options(options)
+                        print("[Camera] MediaPipe ObjectDetector loaded.")
+                    else:
+                        self.interpreter = tflite.Interpreter(model_path=self.model_path)
+                        self.interpreter.allocate_tensors()
+                        self.input_details = self.interpreter.get_input_details()
+                        self.output_details = self.interpreter.get_output_details()
+                        print("[Camera] TFLite Interpreter loaded.")
                 else:
-                    # Standard TFLite Interpreter Initialization
-                    self.interpreter = tflite.Interpreter(model_path=self.model_path)
-                    self.interpreter.allocate_tensors()
-                    self.input_details = self.interpreter.get_input_details()
-                    self.output_details = self.interpreter.get_output_details()
-                    print(f"[Camera] TFLite EfficientDet loaded successfully. Input: {self.input_details[0]['shape']}")
+                    # LAST RESORT: Try loading TFLite via OpenCV DNN (Supported in OpenCV 4.10+)
+                    print("[Camera] Attempting to load TFLite via OpenCV DNN...")
+                    self.net = cv2.dnn.readNet(self.model_path)
+                    self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+                    self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+                    print("[Camera] EfficientDet loaded via OpenCV DNN successfully.")
             except Exception as e:
                 print(f"[Camera] ERROR: Failed to load inference engine: {e}")
         else:
-            print("[Camera] ERROR: TFLite model or runtime missing.")
+            print(f"[Camera] ERROR: Model file not found at {self.model_path}")
 
         # Initialize Picamera2 instance
         if PICAMERA2_AVAILABLE:
@@ -117,52 +124,41 @@ class CameraSystem:
                 if frame is None:
                     continue
                 
-                # Ensure 3 channels
                 if frame.shape[2] == 4:
                     frame = frame[:, :, :3]
                 
                 self.latest_frame = frame
                 
-                if self.interpreter is None and self.detector is None:
+                if self.interpreter is None and self.detector is None and self.net is None:
                     time.sleep(1)
                     continue
 
                 (h, w) = frame.shape[:2]
                 best_detection = {"object": "none", "confidence": 0, "box": None, "frame_width": w}
 
-                if USING_MEDIAPIPE:
-                    # MediaPipe Inference
+                if self.detector: # MediaPipe
                     import mediapipe as mp
                     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                     result = self.detector.detect(mp_image)
-                    
                     if result.detections:
-                        # Find best detection
                         for detection in result.detections:
                             category = detection.categories[0]
                             label = category.category_name
                             confidence = category.score
-                            
                             if label in self.IMPORTANT_CLASSES and confidence > 0.5:
                                 if confidence > best_detection["confidence"]:
                                     bbox = detection.bounding_box
-                                    (startX, startY, endX, endY) = (int(bbox.origin_x), int(bbox.origin_y), 
-                                                                    int(bbox.origin_x + bbox.width), int(bbox.origin_y + bbox.height))
                                     best_detection = {
-                                        "object": label,
-                                        "confidence": float(confidence),
-                                        "box": (startX, startY, endX, endY),
+                                        "object": label, "confidence": float(confidence),
+                                        "box": (int(bbox.origin_x), int(bbox.origin_y), int(bbox.origin_x + bbox.width), int(bbox.origin_y + bbox.height)),
                                         "frame_width": w
                                     }
-                else:
-                    # Standard TFLite Inference
+                elif self.interpreter: # TFLite Interpreter
                     input_shape = self.input_details[0]['shape']
                     input_data = cv2.resize(frame, (input_shape[2], input_shape[1]))
                     input_data = np.expand_dims(input_data, axis=0)
-
                     self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
                     self.interpreter.invoke()
-
                     boxes = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
                     classes = self.interpreter.get_tensor(self.output_details[1]['index'])[0]
                     scores = self.interpreter.get_tensor(self.output_details[2]['index'])[0]
@@ -173,17 +169,29 @@ class CameraSystem:
                         if confidence > 0.5:
                             class_id = int(classes[i])
                             label = self.CLASSES[class_id] if class_id < len(self.CLASSES) else f"unknown_{class_id}"
-                            
-                            if label in self.IMPORTANT_CLASSES:
-                                if confidence > best_detection["confidence"]:
-                                    ymin, xmin, ymax, xmax = boxes[i]
-                                    (startX, startY, endX, endY) = (int(xmin * w), int(ymin * h), int(xmax * w), int(ymax * h))
-                                    best_detection = {
-                                        "object": label,
-                                        "confidence": float(confidence),
-                                        "box": (startX, startY, endX, endY),
-                                        "frame_width": w
-                                    }
+                            if label in self.IMPORTANT_CLASSES and confidence > best_detection["confidence"]:
+                                ymin, xmin, ymax, xmax = boxes[i]
+                                best_detection = {
+                                    "object": label, "confidence": float(confidence),
+                                    "box": (int(xmin * w), int(ymin * h), int(xmax * w), int(ymax * h)),
+                                    "frame_width": w
+                                }
+                elif self.net: # OpenCV DNN Fallback for TFLite
+                    blob = cv2.dnn.blobFromImage(frame, size=(320, 320), swapRB=True, crop=False)
+                    self.net.setInput(blob)
+                    # EfficientDet TFLite via OpenCV usually returns [1, 1, N, 7]
+                    output = self.net.forward()
+                    for i in range(output.shape[2]):
+                        confidence = output[0, 0, i, 2]
+                        if confidence > 0.5:
+                            class_id = int(output[0, 0, i, 1])
+                            label = self.CLASSES[class_id] if class_id < len(self.CLASSES) else f"unknown_{class_id}"
+                            if label in self.IMPORTANT_CLASSES and confidence > best_detection["confidence"]:
+                                box = output[0, 0, i, 3:7] * np.array([w, h, w, h])
+                                best_detection = {
+                                    "object": label, "confidence": float(confidence),
+                                    "box": box.astype("int"), "frame_width": w
+                                }
                 
                 # Stability Filter
                 if best_detection["object"] == self.last_seen_object and best_detection["object"] != "none":
