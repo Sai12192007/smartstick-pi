@@ -10,14 +10,14 @@ def install_dependencies():
         subprocess.check_call(["sudo", "apt-get", "update"])
         subprocess.check_call(["sudo", "apt-get", "install", "-y", 
                              "libopenblas-dev", "libatlas-base-dev", "liblapack-dev",
-                             "libjasper-dev", "libqtgui4", "libqt4-test"])
+                             "libgomp1"])
     except Exception as e:
         print(f"[!] Warning: Could not install system dependencies via apt: {e}")
-        print("[!] Please run: sudo apt install libopenblas-dev libatlas-base-dev")
+        print("[!] Please run: sudo apt install libopenblas0 libatlas3-base libgomp1")
 
     print("[*] Installing Python dependencies...")
-    # Try ai-edge-litert first as it's the newer version of tflite-runtime
-    packages = ["opencv-python", "numpy", "imutils", "requests", "ai-edge-litert"]
+    # Using headless version of OpenCV to reduce system dependencies
+    packages = ["opencv-python-headless", "numpy", "imutils", "requests", "ai-edge-litert"]
     
     # Check if we are on a Raspberry Pi
     is_pi = False
@@ -40,12 +40,12 @@ def install_dependencies():
         try:
             subprocess.check_call(pip_cmd + [package])
         except subprocess.CalledProcessError:
-            if package == "ai-edge-litert":
-                print("[*] ai-edge-litert failed, trying tflite-runtime...")
+            if package == "ai-edge-litert" or package == "tflite-runtime":
+                print("[*] TFLite/LiteRT pip install failed, trying system package...")
                 try:
-                    subprocess.check_call(pip_cmd + ["tflite-runtime"])
+                    subprocess.check_call(["sudo", "apt-get", "install", "-y", "python3-tflite-runtime"])
                 except:
-                    print("[!] Warning: Failed to install TFLite. You may need to install it manually.")
+                    print("[!] Warning: Failed to install TFLite. Please install it manually.")
             else:
                 print(f"[!] Warning: Failed to install {package}.")
 
