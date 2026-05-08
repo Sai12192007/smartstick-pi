@@ -5,7 +5,7 @@ import sys
 
 def install_dependencies():
     print("[*] Installing dependencies...")
-    packages = ["opencv-python", "numpy", "imutils", "requests"]
+    packages = ["opencv-python", "numpy", "imutils", "requests", "tflite-runtime"]
     
     # Check if we are on a Raspberry Pi
     is_pi = False
@@ -28,14 +28,14 @@ def install_dependencies():
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 def download_models():
-    print("[*] Downloading MobileNet SSD models...")
+    print("[*] Downloading EfficientDet-Lite0 TFLite models...")
     model_dir = "models"
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
 
     files = {
-        "deploy.prototxt": "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/deploy.prototxt",
-        "mobilenet.caffemodel": "https://github.com/chuanqi305/MobileNet-SSD/raw/master/mobilenet_iter_73000.caffemodel"
+        "efficientdet_lite0.tflite": "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/latest/efficientdet_lite0.tflite",
+        "labels.txt": "https://raw.githubusercontent.com/amikelive/coco-labels/master/coco-labels-2014_2017.txt"
     }
 
     for filename, url in files.items():
