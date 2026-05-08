@@ -18,10 +18,10 @@ def install_dependencies():
         pass
 
     if is_pi:
-        print("[*] Raspberry Pi detected. Adding RPi.GPIO and picamera2...")
+        print("[*] Raspberry Pi detected. Adding RPi.GPIO...")
         packages.extend(["RPi.GPIO"])
-        # picamera2 is often pre-installed or needs specific libcamera setup
-        # but we'll try to install the wrapper if possible
+        print("[!] IMPORTANT: Picamera2 must be installed via system package manager:")
+        print("[!] sudo apt update && sudo apt install python3-picamera2")
     
     for package in packages:
         print(f"[*] Installing {package}...")

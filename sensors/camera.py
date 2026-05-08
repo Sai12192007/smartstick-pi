@@ -4,6 +4,13 @@ import threading
 import os
 import time
 
+try:
+    from picamera2 import Picamera2
+    PICAMERA2_AVAILABLE = True
+except ImportError:
+    PICAMERA2_AVAILABLE = False
+    print("[Camera] WARNING: Picamera2 not found. Camera will not work on non-Pi systems.")
+
 class CameraSystem:
     def __init__(self, model_path="models/mobilenet.caffemodel", prototxt_path="models/deploy.prototxt"):
         self.model_path = model_path
@@ -19,69 +26,121 @@ class CameraSystem:
         self.IMPORTANT_CLASSES = ["person", "car", "chair", "bottle", "bus", "dog", "cat"]
         
         self.net = None
-        self.cap = None
+        self.picam2 = None
+        self.latest_frame = None
         self.current_detection = {"object": "none", "confidence": 0, "box": None}
         self.running = False
         self.thread = None
 
+        # Initialize ML model
         if os.path.exists(self.model_path) and os.path.exists(self.prototxt_path):
-            self.net = cv2.dnn.readNetFromCaffe(self.prototxt_path, self.model_path)
-            print("[Camera] ML Model loaded successfully")
+            try:
+                self.net = cv2.dnn.readNetFromCaffe(self.prototxt_path, self.model_path)
+                print("[Camera] ML Model loaded successfully")
+            except Exception as e:
+                print(f"[Camera] ERROR: Failed to load ML model: {e}")
         else:
             print("[Camera] ERROR: Model files not found. Run setup.py first.")
 
+        # Initialize Picamera2 instance
+        if PICAMERA2_AVAILABLE:
+            try:
+                self.picam2 = Picamera2()
+                print("[Camera] Picamera2 initialized")
+            except Exception as e:
+                print(f"[Camera] ERROR: Could not initialize Picamera2: {e}")
+        else:
+            print("[Camera] ERROR: Picamera2 is required for this system.")
+
     def start(self):
-        self.cap = cv2.VideoCapture(0)
-        if not self.cap.isOpened():
-            print("[Camera] ERROR: Could not open video source")
+        if not self.picam2:
+            print("[Camera] ERROR: Cannot start, camera not initialized")
             return
         
-        self.running = True
-        self.thread = threading.Thread(target=self._update, daemon=True)
-        self.thread.start()
-        print("[Camera] Thread started")
+        try:
+            # Configure camera: 640x480 resolution for optimal performance on Zero 2 W
+            config = self.picam2.create_video_configuration(main={"size": (640, 480)})
+            self.picam2.configure(config)
+            self.picam2.start()
+            print("[Camera] Picamera2 started at 640x480")
+            
+            self.running = True
+            self.thread = threading.Thread(target=self._update, daemon=True)
+            self.thread.start()
+            print("[Camera] Thread started")
+        except Exception as e:
+            print(f"[Camera] ERROR: Failed to start camera: {e}")
 
     def _update(self):
+        """Threaded loop to capture frames and run ML detection."""
         while self.running:
-            ret, frame = self.cap.read()
-            if not ret:
-                continue
-            
-            # Optimization: Resize frame for faster processing
-            frame = cv2.resize(frame, (300, 300))
-            (h, w) = frame.shape[:2]
-            
-            # Prepare blob
-            blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
-            self.net.setInput(blob)
-            detections = self.net.forward()
+            try:
+                # Capture frame from Picamera2 as numpy array
+                frame = self.picam2.capture_array()
+                if frame is None:
+                    continue
+                
+                # Update latest frame
+                self.latest_frame = frame
+                
+                # Ensure ML model is loaded before processing
+                if self.net is None:
+                    continue
 
-            best_detection = {"object": "none", "confidence": 0, "box": None}
+                # Run ML detection
+                (h, w) = frame.shape[:2]
+                
+                # Prepare blob - cv2.dnn.blobFromImage handles resizing internally
+                blob = cv2.dnn.blobFromImage(frame, 0.007843, (300, 300), 127.5)
+                self.net.setInput(blob)
+                detections = self.net.forward()
 
-            for i in range(0, detections.shape[2]):
-                confidence = detections[0, 0, i, 2]
-                if confidence > 0.5: # Confidence threshold
-                    idx = int(detections[0, 0, i, 1])
-                    label = self.CLASSES[idx]
-                    
-                    if label in self.IMPORTANT_CLASSES:
-                        if confidence > best_detection["confidence"]:
-                            box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-                            (startX, startY, endX, endY) = box.astype("int")
-                            best_detection = {
-                                "object": label,
-                                "confidence": float(confidence),
-                                "box": (startX, startY, endX, endY),
-                                "frame_width": w
-                            }
+                best_detection = {"object": "none", "confidence": 0, "box": None, "frame_width": w}
+
+                for i in range(0, detections.shape[2]):
+                    confidence = detections[0, 0, i, 2]
+                    if confidence > 0.5: # Confidence threshold
+                        idx = int(detections[0, 0, i, 1])
+                        label = self.CLASSES[idx]
+                        
+                        if label in self.IMPORTANT_CLASSES:
+                            if confidence > best_detection["confidence"]:
+                                box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                                (startX, startY, endX, endY) = box.astype("int")
+                                best_detection = {
+                                    "object": label,
+                                    "confidence": float(confidence),
+                                    "box": (startX, startY, endX, endY),
+                                    "frame_width": w
+                                }
+                
+                self.current_detection = best_detection
+                
+            except Exception as e:
+                print(f"[Camera] Capture/ML Error: {e}")
             
-            self.current_detection = best_detection
-            time.sleep(0.1) # Limit FPS to save CPU
+            # Control loop frequency to prevent CPU 100% on Zero 2 W
+            # 10 FPS is usually sufficient for smart stick navigation
+            time.sleep(0.05) 
 
     def get_latest_detection(self):
+        """Returns the most recent object detection results."""
         return self.current_detection
 
+    def get_frame(self):
+        """Returns the latest captured raw frame (numpy array)."""
+        return self.latest_frame
+
     def stop(self):
+        """Safely stops camera and thread."""
         self.running = False
-        if self.cap:
-            self.cap.release()
+        if self.thread:
+            self.thread.join(timeout=1.0)
+            
+        if self.picam2:
+            try:
+                self.picam2.stop()
+                self.picam2.close()
+                print("[Camera] Picamera2 stopped and closed")
+            except Exception as e:
+                print(f"[Camera] Error during shutdown: {e}")
