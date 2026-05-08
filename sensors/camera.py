@@ -58,11 +58,14 @@ class CameraSystem:
             return
         
         try:
-            # Configure camera: 640x480 resolution for optimal performance on Zero 2 W
-            config = self.picam2.create_video_configuration(main={"size": (640, 480)})
+            # Configure camera: 640x480 resolution with BGR888 format
+            config = self.picam2.create_video_configuration(main={
+                "size": (640, 480),
+                "format": "BGR888"
+            })
             self.picam2.configure(config)
             self.picam2.start()
-            print("[Camera] Picamera2 started at 640x480")
+            print("[Camera] Picamera2 started at 640x480 (BGR888)")
             
             self.running = True
             self.thread = threading.Thread(target=self._update, daemon=True)
@@ -79,6 +82,11 @@ class CameraSystem:
                 frame = self.picam2.capture_array()
                 if frame is None:
                     continue
+                
+                # Ensure we have exactly 3 channels (OpenCV DNN expects BGR)
+                # Picamera2 might return 4 channels (e.g. XBGR) depending on the driver
+                if frame.shape[2] == 4:
+                    frame = frame[:, :, :3]
                 
                 # Update latest frame
                 self.latest_frame = frame
