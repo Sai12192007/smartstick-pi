@@ -35,27 +35,29 @@ class SOSButton:
         self.thread.start()
 
     def _monitor(self):
-        """Monitor the button for a 3-second long press."""
+        """Monitor the latching switch for OFF -> ON transitions (HIGH -> LOW)."""
+        # Initial state setup
+        if HAS_GPIO:
+            last_state = GPIO.input(self.pin)
+        else:
+            last_state = 1 # HIGH (OFF)
+            
         while self.running:
             if HAS_GPIO:
-                # Button pressed when pin is LOW (GND)
-                if GPIO.input(self.pin) == GPIO.LOW:
-                    press_start = time.time()
-                    triggered = False
-                    
-                    while GPIO.input(self.pin) == GPIO.LOW:
-                        elapsed = time.time() - press_start
-                        if elapsed >= 3.0 and not triggered:
-                            print("\n[SOS] Emergency button triggered")
-                            if self.callback:
-                                self.callback()
-                            triggered = True
-                        time.sleep(0.1) # Debounce/Poll interval
-                        
-                    # Reset triggered state when button is released
-                    triggered = False
+                current_state = GPIO.input(self.pin)
+                
+                # Detect OFF -> ON transition (Falling Edge: HIGH -> LOW)
+                # Since we use pull-up, LOW means the switch is closed (ON)
+                if last_state == 1 and current_state == 0:
+                    print("\n[SOS] Emergency latch triggered (ON)")
+                    if self.callback:
+                        self.callback()
+                
+                last_state = current_state
             
-            time.sleep(0.1) # Polling interval for low CPU usage
+            # Polling at 20Hz (50ms) provides low CPU usage and 
+            # natural debounce for mechanical switches.
+            time.sleep(0.05)
 
     def stop(self):
         """Stop the monitoring thread."""
