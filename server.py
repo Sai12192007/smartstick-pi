@@ -15,6 +15,10 @@ class DualServer:
         self.sensor_port = 5000
         self.sensor_socket = None
         
+        # Active clients for broadcasting
+        self.clients = []
+        self.clients_lock = threading.Lock()
+        
         # MJPEG Server (Port 5001)
         self.app = Flask(__name__)
         CORS(self.app)
@@ -59,15 +63,22 @@ class DualServer:
             self.sensor_socket.listen(5)
             
             while self.running:
-                client_sock, addr = self.sensor_socket.accept()
-                print(f"[Server] Client connected to Sensor API: {addr}")
-                
-                client_thread = threading.Thread(
-                    target=self._handle_sensor_client, 
-                    args=(client_sock,), 
-                    daemon=True
-                )
-                client_thread.start()
+                try:
+                    client_sock, addr = self.sensor_socket.accept()
+                    print(f"[Server] Client connected to Sensor API: {addr}")
+                    
+                    with self.clients_lock:
+                        self.clients.append(client_sock)
+                    
+                    client_thread = threading.Thread(
+                        target=self._handle_sensor_client, 
+                        args=(client_sock,), 
+                        daemon=True
+                    )
+                    client_thread.start()
+                except socket.error:
+                    if not self.running:
+                        break
         except Exception as e:
             print(f"[Server] Sensor socket error: {e}")
 
@@ -87,13 +98,39 @@ class DualServer:
                 client_sock.sendall(message.encode('utf-8'))
                 
                 time.sleep(0.1) # 10Hz updates for sensors
-        except (ConnectionResetError, BrokenPipeError):
+        except (ConnectionResetError, BrokenPipeError, socket.error):
             print("[Server] Sensor client disconnected")
         finally:
+            with self.clients_lock:
+                if client_sock in self.clients:
+                    self.clients.remove(client_sock)
             client_sock.close()
+
+    def broadcast_event(self, payload):
+        """Broadcast a JSON event to all connected sensor clients."""
+        message = json.dumps(payload) + "\n"
+        encoded_message = message.encode('utf-8')
+        
+        with self.clients_lock:
+            # We iterate over a copy of the list to avoid issues if a socket is removed during iteration
+            for client_sock in list(self.clients):
+                try:
+                    client_sock.sendall(encoded_message)
+                except Exception:
+                    # If sending fails, the client is likely disconnected
+                    # The _handle_sensor_client thread will handle cleanup, 
+                    # but we can proactively remove it from our broadcast list
+                    if client_sock in self.clients:
+                        self.clients.remove(client_sock)
 
     def stop(self):
         self.running = False
         if self.sensor_socket:
             self.sensor_socket.close()
+        
+        with self.clients_lock:
+            for sock in self.clients:
+                sock.close()
+            self.clients.clear()
+            
         print("[Server] Stopped")
